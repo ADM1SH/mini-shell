@@ -5,27 +5,35 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 // Function prototypes
 void execute_pipeline(char *args[], int background);
 void handle_command(char *args[]);
 
 int main() {
-    char line[1024];
+    char *line;
 
-    // Ignore Ctrl+C in the parent shell
+    // The parent shell process should ignore Ctrl+C (SIGINT).
     signal(SIGINT, SIG_IGN);
 
+    // Main shell loop.
     while (1) {
-        // Reap zombie processes from finished background jobs
+        // Before issuing a new prompt, check for any background processes that have finished.
         while (waitpid(-1, NULL, WNOHANG) > 0);
 
-        printf("myshell> ");
-        if (!fgets(line, sizeof(line), stdin)) {
+        // Use readline to get input, which provides history and editing.
+        line = readline("myshell> ");
+        if (line == NULL) {
             printf("\n");
-            break; // EOF
+            break; // Exit on Ctrl+D (EOF)
         }
-        line[strcspn(line, "\n")] = 0;
+
+        // If the line is not empty, add it to the history.
+        if (line[0]) {
+            add_history(line);
+        }
 
         char *args[128];
         char *token = strtok(line, " ");
@@ -37,7 +45,8 @@ int main() {
         args[i] = NULL;
 
         if (!args[0]) {
-            continue;
+            free(line); // Don't forget to free the line if we skip.
+            continue; 
         }
 
         int background = 0;
@@ -47,6 +56,7 @@ int main() {
         }
 
         if (strcmp(args[0], "exit") == 0) {
+            free(line);
             break;
         }
         if (strcmp(args[0], "cd") == 0) {
@@ -57,10 +67,14 @@ int main() {
                     perror("myshell");
                 }
             }
+            free(line);
             continue;
         }
         
         execute_pipeline(args, background);
+
+        // Free the memory allocated by readline.
+        free(line);
     }
     return 0;
 }
@@ -123,7 +137,6 @@ void execute_pipeline(char *args[], int background) {
 }
 
 void handle_command(char *args[]) {
-    // Reset Ctrl+C default behavior for child processes
     signal(SIGINT, SIG_DFL);
 
     char *clean_args[64];
