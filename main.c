@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <signal.h>
 
 // Function prototypes
 void execute_pipeline(char *args[], int background);
@@ -11,6 +12,10 @@ void handle_command(char *args[]);
 
 int main() {
     char line[1024];
+
+    // Ignore Ctrl+C in the parent shell
+    signal(SIGINT, SIG_IGN);
+
     while (1) {
         // Reap zombie processes from finished background jobs
         while (waitpid(-1, NULL, WNOHANG) > 0);
@@ -35,11 +40,10 @@ int main() {
             continue;
         }
 
-        // Check for background execution
         int background = 0;
         if (i > 0 && strcmp(args[i - 1], "&") == 0) {
             background = 1;
-            args[i - 1] = NULL; // Remove '&' from arguments
+            args[i - 1] = NULL;
         }
 
         if (strcmp(args[0], "exit") == 0) {
@@ -114,12 +118,14 @@ void execute_pipeline(char *args[], int background) {
             waitpid(pids[i], NULL, 0);
         }
     } else {
-        // Print last PID for the background job
         printf("[%d]\n", pids[num_commands - 1]);
     }
 }
 
 void handle_command(char *args[]) {
+    // Reset Ctrl+C default behavior for child processes
+    signal(SIGINT, SIG_DFL);
+
     char *clean_args[64];
     int clean_i = 0;
 
