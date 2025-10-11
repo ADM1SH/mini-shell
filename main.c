@@ -3,36 +3,48 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
-#include <fcntl.h> // For open() flags
+#include <fcntl.h>
+
+// Function prototypes
+void execute_pipeline(char *args[], int background);
+void handle_command(char *args[]);
 
 int main() {
-    char input[1024];
-    char *args[64];
-
+    char line[1024];
     while (1) {
-        printf("myshell> ");
-        if (!fgets(input, sizeof(input), stdin)) {
-            printf("\n");
-            break; // EOF (Ctrl+D)
-        }
-        input[strcspn(input, "\n")] = 0;
+        // Reap zombie processes from finished background jobs
+        while (waitpid(-1, NULL, WNOHANG) > 0);
 
-        char *token = strtok(input, " ");
+        printf("myshell> ");
+        if (!fgets(line, sizeof(line), stdin)) {
+            printf("\n");
+            break; // EOF
+        }
+        line[strcspn(line, "\n")] = 0;
+
+        char *args[128];
+        char *token = strtok(line, " ");
         int i = 0;
-        while (token != NULL) {
+        while (token) {
             args[i++] = token;
             token = strtok(NULL, " ");
         }
         args[i] = NULL;
 
-        if (args[0] == NULL) {
+        if (!args[0]) {
             continue;
+        }
+
+        // Check for background execution
+        int background = 0;
+        if (i > 0 && strcmp(args[i - 1], "&") == 0) {
+            background = 1;
+            args[i - 1] = NULL; // Remove '&' from arguments
         }
 
         if (strcmp(args[0], "exit") == 0) {
             break;
         }
-
         if (strcmp(args[0], "cd") == 0) {
             if (args[1] == NULL) {
                 fprintf(stderr, "myshell: expected argument to \"cd\"\n");
@@ -43,97 +55,104 @@ int main() {
             }
             continue;
         }
-
-        // --- Handle Redirection ---
-        char *inputFile = NULL;
-        char *outputFile = NULL;
-        int append_mode = 0; // 0 for >, 1 for >>
-        char *clean_args[64];
-        int clean_i = 0;
-        int parse_error = 0;
-
-        for (int j = 0; args[j] != NULL; j++) {
-            if (strcmp(args[j], "<") == 0) {
-                if (args[j + 1] != NULL) {
-                    inputFile = args[j + 1];
-                    j++; // Skip the filename in the next iteration
-                } else {
-                    fprintf(stderr, "myshell: syntax error near unexpected token `newline'\n");
-                    parse_error = 1;
-                    break;
-                }
-            } else if (strcmp(args[j], ">") == 0) {
-                if (args[j + 1] != NULL) {
-                    outputFile = args[j + 1];
-                    append_mode = 0;
-                    j++; // Skip the filename
-                } else {
-                    fprintf(stderr, "myshell: syntax error near unexpected token `newline'\n");
-                    parse_error = 1;
-                    break;
-                }
-            } else if (strcmp(args[j], ">>") == 0) {
-                if (args[j + 1] != NULL) {
-                    outputFile = args[j + 1];
-                    append_mode = 1;
-                    j++; // Skip the filename
-                } else {
-                    fprintf(stderr, "myshell: syntax error near unexpected token `newline'\n");
-                    parse_error = 1;
-                    break;
-                }
-            } else {
-                clean_args[clean_i++] = args[j];
-            }
-        }
-        clean_args[clean_i] = NULL;
-
-        if (parse_error) {
-            continue; // Skip execution if there was a parsing error
-        }
-
-        pid_t pid = fork();
-        if (pid == 0) {
-            // --- Child Process ---
-
-            // Handle input redirection
-            if (inputFile != NULL) {
-                int fd_in = open(inputFile, O_RDONLY);
-                if (fd_in == -1) {
-                    perror("myshell");
-                    exit(EXIT_FAILURE);
-                }
-                dup2(fd_in, STDIN_FILENO);
-                close(fd_in);
-            }
-
-            // Handle output redirection
-            if (outputFile != NULL) {
-                int flags = O_WRONLY | O_CREAT;
-                if (append_mode) {
-                    flags |= O_APPEND;
-                } else {
-                    flags |= O_TRUNC;
-                }
-                int fd_out = open(outputFile, flags, 0644);
-                if (fd_out == -1) {
-                    perror("myshell");
-                    exit(EXIT_FAILURE);
-                }
-                dup2(fd_out, STDOUT_FILENO);
-                close(fd_out);
-            }
-
-            if (execvp(clean_args[0], clean_args) == -1) {
-                perror("myshell");
-                exit(EXIT_FAILURE);
-            }
-        } else if (pid < 0) {
-            perror("myshell");
-        } else {
-            // Parent process
-            waitpid(pid, NULL, 0);
-        }
+        
+        execute_pipeline(args, background);
     }
     return 0;
+}
+
+void execute_pipeline(char *args[], int background) {
+    int num_commands = 0;
+    char **commands[10];
+    commands[0] = args;
+
+    for (int i = 0; args[i] != NULL; i++) {
+        if (strcmp(args[i], "|") == 0) {
+            args[i] = NULL;
+            commands[++num_commands] = &args[i + 1];
+        }
+    }
+    num_commands++;
+
+    int in_fd = 0;
+    pid_t pids[num_commands];
+
+    for (int i = 0; i < num_commands; i++) {
+        int pipe_fds[2];
+        if (i < num_commands - 1) {
+            if (pipe(pipe_fds) == -1) {
+                perror("pipe");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        pids[i] = fork();
+        if (pids[i] == 0) { // Child process
+            if (in_fd != 0) {
+                dup2(in_fd, STDIN_FILENO);
+                close(in_fd);
+            }
+            if (i < num_commands - 1) {
+                dup2(pipe_fds[1], STDOUT_FILENO);
+                close(pipe_fds[0]);
+                close(pipe_fds[1]);
+            }
+            handle_command(commands[i]);
+        }
+
+        if (in_fd != 0) {
+            close(in_fd);
+        }
+        if (i < num_commands - 1) {
+            close(pipe_fds[1]);
+            in_fd = pipe_fds[0];
+        }
+    }
+
+    if (!background) {
+        for (int i = 0; i < num_commands; i++) {
+            waitpid(pids[i], NULL, 0);
+        }
+    } else {
+        // Print last PID for the background job
+        printf("[%d]\n", pids[num_commands - 1]);
+    }
+}
+
+void handle_command(char *args[]) {
+    char *clean_args[64];
+    int clean_i = 0;
+
+    for (int j = 0; args[j] != NULL; j++) {
+        if (strcmp(args[j], "<") == 0 || strcmp(args[j], ">") == 0 || strcmp(args[j], ">>") == 0) {
+            j++;
+        } else {
+            clean_args[clean_i++] = args[j];
+        }
+    }
+    clean_args[clean_i] = NULL;
+
+    for (int j = 0; args[j] != NULL; j++) {
+        if (strcmp(args[j], ">") == 0) {
+            int fd = open(args[j + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) { perror("open"); exit(1); }
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+        } else if (strcmp(args[j], ">> ") == 0) {
+            int fd = open(args[j + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd < 0) { perror("open"); exit(1); }
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+        } else if (strcmp(args[j], "<") == 0) {
+            int fd = open(args[j + 1], O_RDONLY);
+            if (fd < 0) { perror("open"); exit(1); }
+            dup2(fd, STDIN_FILENO);
+            close(fd);
+        }
+    }
+
+    if (execvp(clean_args[0], clean_args) == -1) {
+        perror("myshell");
+        exit(EXIT_FAILURE);
+    }
 }
