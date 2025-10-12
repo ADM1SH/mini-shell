@@ -12,25 +12,22 @@
 void execute_pipeline(char *args[], int background);
 void handle_command(char *args[]);
 
+// For accessing environment variables
+extern char **environ;
+
 int main() {
     char *line;
-
-    // The parent shell process should ignore Ctrl+C (SIGINT).
     signal(SIGINT, SIG_IGN);
 
-    // Main shell loop.
     while (1) {
-        // Before issuing a new prompt, check for any background processes that have finished.
         while (waitpid(-1, NULL, WNOHANG) > 0);
 
-        // Use readline to get input, which provides history and editing.
         line = readline("myshell> ");
         if (line == NULL) {
             printf("\n");
-            break; // Exit on Ctrl+D (EOF)
+            break;
         }
 
-        // If the line is not empty, add it to the history.
         if (line[0]) {
             add_history(line);
         }
@@ -45,7 +42,7 @@ int main() {
         args[i] = NULL;
 
         if (!args[0]) {
-            free(line); // Don't forget to free the line if we skip.
+            free(line);
             continue; 
         }
 
@@ -55,6 +52,7 @@ int main() {
             args[i - 1] = NULL;
         }
 
+        // --- Handle Built-in Commands that affect the parent ---
         if (strcmp(args[0], "exit") == 0) {
             free(line);
             break;
@@ -70,10 +68,30 @@ int main() {
             free(line);
             continue;
         }
+        if (strcmp(args[0], "setenv") == 0) {
+            if (args[1] == NULL || args[2] == NULL) {
+                fprintf(stderr, "myshell: usage: setenv VAR VALUE\n");
+            } else {
+                if (setenv(args[1], args[2], 1) != 0) {
+                    perror("myshell: setenv");
+                }
+            }
+            free(line);
+            continue;
+        }
+        if (strcmp(args[0], "unsetenv") == 0) {
+            if (args[1] == NULL) {
+                fprintf(stderr, "myshell: usage: unsetenv VAR\n");
+            } else {
+                if (unsetenv(args[1]) != 0) {
+                    perror("myshell: unsetenv");
+                }
+            }
+            free(line);
+            continue;
+        }
         
         execute_pipeline(args, background);
-
-        // Free the memory allocated by readline.
         free(line);
     }
     return 0;
@@ -139,6 +157,15 @@ void execute_pipeline(char *args[], int background) {
 void handle_command(char *args[]) {
     signal(SIGINT, SIG_DFL);
 
+    // Handle built-ins that can run in a child process.
+    if (strcmp(args[0], "printenv") == 0) {
+        for (char **env = environ; *env != 0; env++) {
+            printf("%s\n", *env);
+        }
+        exit(0);
+    }
+
+    // If not a built-in, handle redirection and execution.
     char *clean_args[64];
     int clean_i = 0;
 
