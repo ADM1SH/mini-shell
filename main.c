@@ -52,16 +52,30 @@ int main() {
             args[i - 1] = NULL;
         }
 
-        // --- Handle Built-in Commands that affect the parent ---
         if (strcmp(args[0], "exit") == 0) {
             free(line);
             break;
         }
         if (strcmp(args[0], "cd") == 0) {
             if (args[1] == NULL) {
-                fprintf(stderr, "myshell: expected argument to \"cd\"\n");
+                // Expand $HOME for `cd` without arguments
+                char* home_dir = getenv("HOME");
+                if (home_dir != NULL && chdir(home_dir) != 0) {
+                    perror("myshell");
+                }
             } else {
-                if (chdir(args[1]) != 0) {
+                // Handle `cd $VAR` expansion here since it's a parent built-in
+                if (args[1][0] == '$') {
+                    char* var_name = args[1] + 1;
+                    char* value = getenv(var_name);
+                    if (value != NULL) {
+                        if (chdir(value) != 0) {
+                            perror("myshell");
+                        }
+                    } else {
+                        fprintf(stderr, "myshell: cd: %s: No such file or directory\n", args[1]);
+                    }
+                } else if (chdir(args[1]) != 0) {
                     perror("myshell");
                 }
             }
@@ -157,7 +171,19 @@ void execute_pipeline(char *args[], int background) {
 void handle_command(char *args[]) {
     signal(SIGINT, SIG_DFL);
 
-    // Handle built-ins that can run in a child process.
+    // --- Variable Expansion ---
+    for (int i = 0; args[i] != NULL; i++) {
+        if (args[i][0] == '$') {
+            char *var_name = args[i] + 1;
+            char *value = getenv(var_name);
+            if (value != NULL) {
+                args[i] = value;
+            } else {
+                args[i] = ""; // Replace with empty string if not found
+            }
+        }
+    }
+
     if (strcmp(args[0], "printenv") == 0) {
         for (char **env = environ; *env != 0; env++) {
             printf("%s\n", *env);
@@ -165,7 +191,6 @@ void handle_command(char *args[]) {
         exit(0);
     }
 
-    // If not a built-in, handle redirection and execution.
     char *clean_args[64];
     int clean_i = 0;
 
