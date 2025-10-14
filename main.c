@@ -133,6 +133,19 @@ void process_line(char *line) {
         printf("  unalias NAME   - Remove an alias\n");
         printf("  clear          - Clear the terminal screen\n");
         printf("  help           - Display this help message\n");
+        printf("  history        - Show command history\n");
+        return;
+    }
+    if (strcmp(args[0], "history") == 0) {
+        HISTORY_STATE *myhist = history_get_history_state();
+        if (myhist) {
+            for (int i = 0; i < myhist->length; i++) {
+                HIST_ENTRY *entry = history_get(i + history_base);
+                if (entry) {
+                    printf(" %d  %s\n", i + history_base, entry->line);
+                }
+            }
+        }
         return;
     }
 
